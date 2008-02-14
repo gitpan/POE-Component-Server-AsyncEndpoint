@@ -4,5 +4,9 @@ Revision history for Perl extension POE::Component::Server::AsyncEndpoint
 	- original version; created by h2xs 1.23 with options
 		-XAn POE::Component::Server::AsyncEndpoint
 
-0.01  Thu Feb 13 23:40:00 2008 
+0.01  Wed Feb 13 23:40:00 2008 
         - Publishing of first complete working version
+
+0.02  Thu Feb 14 08:17:00 2008 
+        - Fixed failed PAUSE indexer problem (put al files into a single dir)
+

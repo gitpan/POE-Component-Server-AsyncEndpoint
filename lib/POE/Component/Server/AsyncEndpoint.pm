@@ -5,7 +5,7 @@ use strict;
 our @EXPORT = ( );
 use base qw(Exporter);
 use vars qw($VERSION);
-$VERSION = '0.01';
+$VERSION = '0.02';
 
 
 use POE;
