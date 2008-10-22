@@ -17,15 +17,6 @@ unless (dirname(File::Spec->rel2abs(File::Spec->updir())) =~ /^.*\/endpoints$/){
     exit(1);
 }
 
-GETEPNAME:
-print "Please specify a name for your new Message Endpoint: ";
-$epname = ReadLine(0);
-chomp($epname);
-unless ($epname) {
-    print "There is no default. Please enter a name for your endpoint!\n";
-    goto GETEPNAME;
-}
-
 
 GETEPTYPE:
 print "Will this be an Outbound or Inbound Message Endpoint?(OB/IB): ";
@@ -47,6 +38,15 @@ if($eptype eq 'OB'){
     }
 }
 
+GETEPNAME:
+print "Specifiy a name for your new Message Endpoint \n";
+print q|Tip: Use "OB_[Name]" for Outbound or "IB_[Name]" for Inbound: |;
+$epname = ReadLine(0);
+chomp($epname);
+unless ($epname) {
+    print "There is no default. Please enter a name for your endpoint!\n";
+    goto GETEPNAME;
+}
 
 my $f = File::Util->new();
 
@@ -56,6 +56,9 @@ $f->make_dir($epname,0755);
 # the conf file
 my $epconf =
 q{
+# Start with AES?
+start = 1
+
 # The popper frequency constant
 popper_freq = 20
 
@@ -74,7 +77,7 @@ soap_service = 'http://ws.yourdomain.com/soapservices.wsdl'
 socuser = specify
 socpass = specify
 
-# SOAP Service Credentials (undef if not specified)
+# STOMP Service Credentials (undef if not specified)
 stcuser = specify
 stcpass = specify
 
@@ -96,7 +99,7 @@ $f->write_file(
 my $epexe =
 qq{#!/usr/bin/perl
 
-# This is needed because this process is started 
+# This is needed because this process is started
 # relative to the main aes executable
 BEGIN{
     unshift \@INC, 'endpoints/$epname';
@@ -119,117 +122,135 @@ $f->write_file(
 my $ib =
 q`
 package `.$epname.q`;
-use POE;
 
 use base POE::Component::Server::AsyncEndpoint::ChannelAdapter;
+
+use POE;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config;
-
-use MIME::Entity;
 use JSON;
 use Carp qw(croak);
 
 sub new {
 
-    my $class = shift;
+  my $class = shift;
+  my $Alias = '`.$epname.q`';
 
-    # Will refuse to start without Alias
-    my $Alias = '`.$epname.q`';
+  # init the channel adapter
+  my $self = $class->SUPER::new(
+    Alias => $Alias,
+    OStates => [qw(
+                    put`.$epname.q`
+                    put`.$epname.q`_response
+                    soap_response
+                )],
 
-    # Initialize the Channel Adapter
-    my $self = $class->SUPER::new({
-        Alias => $Alias,
-        OStates => [ '`.$epname.q`' ],
+  );
 
-    });
+  # init the STOMP client
+  my $stc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp->spawn(
+    Alias  => $Alias.'_STC',
+    mq_address  => $self->{config}->mq_address,
+    mq_port  => $self->{config}->mq_port,
+    queue  => '/queue/QUEUE_NAME_HERE', # adjust to your needs
+    direction  => 'IB',
+    user  => $self->{config}->stcuser,
+    pass  => $self->{config}->stcpass,
+    rx_callback => {
+      to_session => $Alias,
+      to_handler => 'put`.$epname.q`',
+    },
+  );
 
-    # Init STOMP Client. Adjust parameters in config file
-    my $stc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp->spawn({
-        Alias  => $Alias.'_STC',
-        mq_address  => $self->{config}->mq_address,
-        mq_port  => $self->{config}->mq_port,
-        queue  => '/queue/`.lc($epname).q`',
-        direction  => 'IB',
-        user  => $self->{config}->stcuser,
-        pass  => $self->{config}->stcpass,
-        rx_callback => {
-            to_session => $Alias,
-            to_handler => '`.$epname.q`',
-        },
-    });
+  # init the SOAP client
+  my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn(
+    proxy => $self->{config}->soap_proxy,
+    service => $self->{config}->soap_service,
+    to_session => $Alias,
+    to_handler => 'soap_response',
+    retry_reconnect => 1,
+  );
 
-    # Init the SOAP Client. Adjust parameters in config file
-    my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn({
-        proxy => $self->{config}->soap_proxy,
-        service => $self->{config}->soap_service,
-    });
+  # save the clients
+  $self->{STC} = $stc;
+  $self->{SOC} = $soc;
 
-
-    # STOMP Client
-    $self->{STC} = $stc;
-
-    # SOAP Client
-    $self->{SOC} = $soc;
-
-    return $self;
+  return $self;
 
 }
 
+# run the endpoint
 sub run {
-
-   my $self = shift;
-
-   $self->SUPER::run();
-
+  my $self = shift;
+  $self->SUPER::run();
 }
 
 
-sub `.$epname.q` {
+sub put`.$epname.q` {
+  my ($self, $kernel, $session, $frame) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $soc_call = 'put`.$epname.q`';
+  unless($self->{SOC}->{soc_stat}){
+    $kernel->delay_set($soc_call, $self->{config}->soc_retry, $frame);
+  }
+  $self->{msgid} = $frame->headers->{'message-id'};
+  $self->{soc_call} = $soc_call;
+  my $call = $soc->$soc_call(
+    $self->{config}->socuser,
+    $self->{config}->socpass,
+    $frame->body
+  );
+}
 
-    my ($self, $kernel, $session, $frame) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+# SOAP responses (including errors)
+sub soap_response {
+  my ( $self, $kernel, $session, $soc_ret ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $call  = undef;
+  my $data  = undef;
+  my $error = undef;
 
-    my $soc = $self->{SOC};
-    my $soc_fail = 0;
-    my $msgid = $frame->headers->{'message-id'};
-
-    # Invoke the IB SOAP Service
-    my $call = $soc->put`.$epname.q`(
-        $self->{config}->socuser,
-        $self->{config}->socpass,
-        $frame->body
-    );
-
-    unless ( $call->fault ) {
-        if ( $call->result eq 'OK' ) {
-            # ACK the message to STOMP
-            $kernel->call($self->{STC}->config('Alias'), 'ACK_message', $msgid);
-            # Log success
-            my $logmsg = "OK `.$epname.q` for Message ID $msgid\n";
-            $kernel->yield('logit', 'alert', $logmsg);
-        }
-        else {
-            # Log failure
-            my $logmsg = "FAIL `.$epname.q` executed fine, ".
-                "but did NOT return OK (".$call->result.")\n";
-            $kernel->yield('logit', 'alert', $logmsg);
-            $soc_fail = 1;
-        }
-
+  if(ref $soc_ret eq 'ARRAY'){
+    $call = $soc_ret->[0];
+    $data = $soc_ret->[1];
+    unless($call eq $self->{soc_call}){
+      $error = 'ERROR: SOAP Response does not match current Call';
     }
-    else {
-        # Log SOAP Failure
-        my $logmsg = "FAIL `.$epname.q` for Message ID $msgid (".
-            $call->faultstring.")\n";
-        $kernel->yield('logit', 'alert', $logmsg);
-        $soc_fail = 1;
+    if($call =~ m/^-ERROR-$/){
+      $error = $data;
+      $call = $self->{soc_call};
     }
+    $self->{soc_call} = undef;
+  }
+  else{
+    $error = 'ERROR: SOAP Response is Invalid';
+  }
 
-    # Retry SOAP service if failure
-    if($soc_fail){
-        $kernel->delay_set('`.$epname.q`', $self->{config}->soc_retry, $frame);
-    }
+  unless($error){
+    $kernel->yield($call.'_response', $data);
+  }
+  else {
+    my $logmsg = "ERROR: SOAP Call: $call Failed\n";
+    $kernel->post($session, 'logit', 'alert', $logmsg);
+    $kernel->delay_set($call, $self->{config}->soc_retry);
+  }
+}
 
+
+sub put`.$epname.q`_response {
+  my ( $self, $kernel, $session, $data ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $msgid = $self->{message_id};
+  if ($data eq 'OK') {
+    $self->{message_id} = undef;
+    $kernel->call($self->{STC}->config('Alias'), 'ACK_message', $msgid);
+    my $logmsg = "OK put`.$epname.q` para Message ID $msgid\n";
+    $kernel->yield('logit', 'alert', $logmsg);
+  }
+  else {
+    my $logmsg = "SOAP Call put`.$epname.q`FIFO was executed,, ".
+      "but did not return OK: ($data)\n";
+    $kernel->yield('logit', 'alert', $logmsg);
+    $kernel->delay_set('put`.$epname.q`', $self->{config}->soc_retry, $frame);
+  }
 }
 
 
@@ -237,208 +258,190 @@ sub `.$epname.q` {
 
 `;
 
+
 my $obsp =
 q`
 package `.$epname.q`;
 
-use POE;
-
 use base POE::Component::Server::AsyncEndpoint::ChannelAdapter;
+
+use POE;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config;
-
-use JSON; #optional see popper routine below
+use JSON;
 use Carp qw(croak);
 
 sub new {
 
-    my $class = shift;
+  my $class = shift;
+  my $Alias = `.$epname.q`;
 
-    my $Alias = `.$epname.q`;
+  # init the endpoint
+  my $self = $class->SUPER::new({
+    Alias => $Alias,
+    OStates => [qw(
+                    pop`.$epname.q`FIFO
+                    pop`.$epname.q`FIFO_response
+                    popped`.$epname.q`FIFO
+                    popped`.$epname.q`FIFO_response
+                    soap_response
+                    stomp_receipt
+                )],
+  });
 
-    # Init our module. Single phase OB Endpoints need at least 2
-    # object states: one for the popper and the other one to handle
-    # the STOMP RECEIPT.
-    my $self = $class->SUPER::new({
-        Alias => $Alias,
-        OStates =>
-            [ 'pop_fifo', 'RCPT_`.$epname.q`' ],
-    });
+  # init the STOMP client
+  my $stc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp->spawn(
+    Alias         => $Alias . '_STC',
+    mq_address    => $self->{config}->mq_address,
+    mq_port       => $self->{config}->mq_port,
+    queue         => '/queue/QUEUE_NAME_HERE', # adjust to your needs
+    direction     => 'OB',
+    user          => $self->{config}->socuser,
+    pass          => $self->{config}->socpass,
+    rcpt_callback => {
+      to_session => $Alias,
+      to_handler => 'stomp_receipt',
+    },
 
-    # Init the STOMP Client. Please change these settings for the MQ
-    # we are connecting to. This is usually the MQ fired by your
-    # parent aes process but it could be another MQ (rare for OB
-    # Endpoints but common for IB ones).
-    my $stc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp->spawn({
-        Alias         => $Alias . '_STC',
-        mq_address    => $self->{config}->mq_address,
-        mq_port       => $self->{config}->mq_port,
-        # The queue name is just an example based on the name of the endpoint
-        # some characters may not work. Please check and adjust name of the
-        # queue where you will publish the data
-        queue         => '/queue/`.lc($epname).q`',
-        direction     => 'OB',
-        user          => $self->{config}->stcuser,
-        pass          => $self->{config}->stcpass,
-        rcpt_callback => {
-            to_session => $Alias,
-            to_handler => 'RCPT_`.$epname.q`',
-        },
+  );
 
-    });
+  # init the SOAP client
+  my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn(
+    proxy   => $self->{config}->soap_proxy,
+    service => $self->{config}->soap_service,
+    to_session => $Alias,
+    to_handler => 'soap_response',
+    retry_reconnect => 1,
+  );
 
-    # Sample SOAP Client Setup. Adjust in config file
-    my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn({
-        proxy   => $self->{config}->soap_proxy,
-        service => $self->{config}->soap_service,
-    });
+  # save the clients
+  $self->{STC} = $stc;
+  $self->{SOC} = $soc;
 
-    # Save the STOMP Client
-    $self->{STC} = $stc;
-
-    # Save the SOAP Client
-    $self->{SOC} = $soc;
-
-    # Init the popper
-    POE::Kernel->post( '`.$epname.q`', 'pop_fifo' );
-    return $self;
+  POE::Kernel->post($Alias, 'pop`.$epname.q`FIFO' );
+  return $self;
 
 }
 
+# run the endpoint
 sub run {
-    my $self = shift;
-    $self->SUPER::run();
+  my $self = shift;
+  $self->SUPER::run();
 }
 
-# The FIFO popper routine
-sub pop_fifo {
-    my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+# pop the fifo
+sub pop`.$epname.q`FIFO {
+  my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+  # reset popper timer
+  $kernel->delay_set('pop`.$epname.q`FIFO', $self->{config}->popper_freq);
+  # not ready to pop...
+  return unless ($self->{ikc_stat} && $self->{STC}->{stc_stat} && $self->{SOC}->{soc_stat});
+  # no new pop until we flush the current one
+  return if defined($self->{fifo_id});
 
-    # Reset the popper
-    $kernel->delay_set('pop_fifo', $self->{config}->popper_freq);
+  my $soc_call = 'pop`.$epname.q`FIFO';
+  $self->{soc_call} = $soc_call;
+  $self->{SOC}->$soc_call(
+    $self->{config}->socuser,
+    $self->{config}->socpass
+  );
+}
 
-    # Not initialized yet
-    return unless ($self->{ikc_stat} && $self->{STC}->{stc_stat});
+# marks fifo as popped
+sub popped`.$epname.q`FIFO {
+  my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+  my $soc_call = 'popped`.$epname.q`FIFO';
+  unless($self->{SOC}->{soc_stat}){
+    $kernel->delay_set($soc_call, $self->{config}->soc_retry);
+  }
+  $self->{soc_call} = $soc_call;
+  $self->{SOC}->$soc_call(
+    $self->{config}->socuser,
+    $self->{config}->socpass,
+    $self->{fifo_id},
+  );
+}
 
-    # No popping if current one is not cleared. This will be cleared
-    # when we get a RECEIPT from the MQ.
-    return if defined($self->{fifo_id});
 
-    my $soc = $self->{SOC};
-    my $stc = $self->{STC};
+# STOMP receipt from MQ
+sub stomp_receipt {
+  my ($self, $kernel, $frame) = @_[OBJECT, KERNEL, ARG0];
+  my $receipt_id = $frame->headers->{receipt};
+  my $fifo_id    = $self->{fifo_id};
 
-    # pop the FIFO via SOAP. Note the name of the service is just an example
-    # please adjust with your actual wsdl name for this service in config file
-    my $call = $soc->pop`.$epname.q`FIFO(
-        $self->{config}->socuser,
-        $self->{config}->socpass
-    );
+  if ($receipt_id != $fifo_id) {
+    my $logmsg = "FATAL ERROR: Receipt id does not match expected\n";
+    $kernel->yield('logit', 'emergency', $logmsg);
+    croak $logmsg;
+  }
 
-    unless ( $call->fault ) {
-
-        # This example uses JSON to exemplify how easy it is to
-        # retrieve the serialized data. You can, of course, use XML or
-        # another serialization technique (YAML, for example) and
-        # adapt this to your liking.
-        my $retval = from_json( $call->result );
-        if ( my $fifo_id = $retval->{fifo_id} ) {
-            # Save current FIFO record. This not only blocks any
-            # further popping until we have processed the current one
-            # (see above), but saving data will also give you a chance
-            # to retry send in STOMP errors, etc.
-            $self->{fifo_id} = $fifo_id;
-            $self->{data}  = $retval->{params};
-
-            # send the data to the mq
-            my $nframe = $stc->stomp->send({
-                destination => $stc->config('Queue'),
-                # This example assumes that the data is already in string form
-                # like JSON, XML string or other serialization format
-                data        => $self->{data},
-                receipt     => $fifo_id,
-            });
-            $kernel->call( $stc->config('Alias'), 'send_data', $nframe );
-
-        }
-        # No FIFO record has been popped. We assume here that your
-        # popping web service will return OK but with null in the
-        # fifo_id. Adjust this (and the if above) according to your
-        # particular web service.
-        else {
-            $self->{fifo_id} = undef;
-            $self->{data}  = undef;
-        }
-    }
-    # handle and log SOAP failure
-    else {
-        my $logmsg = "FAIL pop_fifo (".
-            $call->faultstring.")\n";
-        $kernel->yield('logit', 'alert', $logmsg);
-    }
+  $kernel->yield('popped`.$epname.q`FIFO');
 
 }
 
-# RECEIPT handler
-sub RCPT_`.$epname.q` {
+# SOAP responses (including errors)
+sub soap_response {
+  my ( $self, $kernel, $session, $soc_ret ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $call  = undef;
+  my $data  = undef;
+  my $error = undef;
 
-    my ($self, $kernel, $frame) = @_[OBJECT, KERNEL, ARG0];
-
-    my $receipt_id = $frame->headers->{receipt};
-    my $fifo_id    = $self->{fifo_id};
-
-
-    # this really should never happen
-    if($receipt_id != $fifo_id){
-        my $logmsg = "ENDPOINT PANIC! THE RECEIPT ID DOES NOT MATCH CURRENT FIFO ID. BAILING OUT!\n";
-        $kernel->yield('logit', 'emergency', $logmsg);
-        # kill the current endpoint
-        croak $logmsg;
+  if(ref $soc_ret eq 'ARRAY'){
+    $call = $soc_ret->[0];
+    $data = $soc_ret->[1];
+    unless($call eq $self->{soc_call}){
+      $error = 'ERROR: SOAP Response does not match current Call';
     }
-
-    my $soc = $self->{SOC};
-
-    # Invoke the SOAP service that marks this FIFO record as
-    # effectively popped. The service name is just an example
-    # adjust to the actual name in the wsdl
-    my $call = $soc->popped`.$epname.q`FIFO(
-        $self->{config}->socuser,
-        $self->{config}->socpass,
-        $fifo_id
-    );
-
-    my $popped_fail = 0;
-
-    unless ( $call->fault ) {
-        # Now we can clear the FIFO id and resume popping. This
-        # assumes that your WS returns the string OK if it marked the
-        # FIFO record as popped.
-        if ( $call->result eq 'OK' ) {
-            $self->{fifo_id} = undef;
-            $self->{params}  = undef;
-        }
-        else {
-            my $logmsg = "FAIL The popped WS executed fine, ".
-                "but it did NOT return OK (".$call->result.")\n";
-            $kernel->yield('logit', 'alert', $logmsg);
-            $popped_fail = 1;
-        }
-
+    if($call =~ m/^-ERROR-$/){
+      $error = $data;
+      $call = $self->{soc_call};
     }
-    else {
-        my $logmsg = "FAIL popped`.$epname.q` for FIFO ID $fifo_id (".
-            $call->faultstring.")\n";
-        $kernel->yield('logit', 'alert', $logmsg);
-        $popped_fail = 1;
-    }
+    $self->{soc_call} = undef;
+  }
+  else{
+    $error = 'ERROR: SOAP Response is Invalid';
+  }
 
-    # retry popped service if failure
-    if($popped_fail){
-        $kernel->delay_set('RCPT_`.$epname.q`', $self->{config}->soc_retry, $frame);
-    }
-
-
+  unless($error){
+    $kernel->yield($call.'_response', $data);
+  }
+  else {
+    my $logmsg = "ERROR: SOAP Call: $call Failed\n";
+    $kernel->post($session, 'logit', 'alert', $logmsg);
+    $kernel->delay_set($call, $self->{config}->soc_retry);
+  }
 }
+
+sub pop`.$epname.q`FIFO_response {
+  my ( $self, $kernel, $session, $data ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $stc    = $self->{STC};
+  my $fifo_id = $self->{fifo_id};
+  my $nframe = $stc->stomp->send({
+    destination => $stc->config('Queue'),
+    data        => $data,
+    receipt     => $fifo_id,
+  });
+
+  my $logmsg = "OK SOAP pop`.$epname.q`FIFO and sent to the MQ";
+  $kernel->post($session, 'logit', 'alert', $logmsg);
+  $kernel->post($stc->config('Alias'), 'send_data', $nframe );
+}
+
+sub popped`.$epname.q`FIFO_response {
+  my ( $self, $kernel, $session, $data ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  if($data eq 'OK'){
+    $self->{fifo_id} = undef;
+    $self->{params}  = undef;
+  }
+  else{
+    my $logmsg = "SOAP Call popped`.$epname.q`FIFO was executed, ".
+        "but did not return OK: ($data)\n";
+    $kernel->post($session, 'logit', 'alert', $logmsg);
+    $kernel->delay_set('popped`.$epname.q`FIFO_response', $self->{config}->soc_retry);
+  }
+}
+
 
 1;
 
@@ -448,249 +451,218 @@ my $obdp =
 q`
 package `.$epname.q`;
 
-use POE;
-
 use base POE::Component::Server::AsyncEndpoint::ChannelAdapter;
+
+use POE;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config;
-
-use MIME::Entity;
 use JSON;
 use Carp qw(croak);
 
 sub new {
 
-    my $class = shift;
+  my $class = shift;
+  my $Alias = '`.$epname.q`';
 
-    # Package will croak without Alias
-    my $Alias = '`.$epname.q`';
+  # init the endpoint
+  my $self = $class->SUPER::new(
+    Alias => $Alias,
+    OStates => [qw(
+                   pop`.$epname.q`FIFO
+                   pop`.$epname.q`FIFO_response
+                   get`.$epname.q`
+                   get`.$epname.q`_response
+                   popped`.$epname.q`FIFO
+                   popped`.$epname.q`FIFO_response
+                   soap_response
+                   stomp_receipt
+               )],
+  );
 
-    # Init our module. Double phase OB Endpoints need at least 3
-    # object states: one for the popper, one for the actual OB Web
-    # Service and the other one to handle the STOMP RECEIPT.
-    my $self = $class->SUPER::new({
-        Alias => $Alias,
-        OStates =>
-            [ 'pop_fifo', '`.$epname.q`', 'RCPT_`.$epname.q`' ],
-    });
+  # init the STOMP client
+  my $stc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp->spawn(
+    Alias         => $Alias . '_STC',
+    mq_address    => $self->{config}->mq_address,
+    mq_port       => $self->{config}->mq_port,
+    queue         => '/queue/QUEUE_NAME_HERE', # adjust to your needs
+    direction     => 'OB',
+    user          => $self->{config}->stcuser,
+    pass          => $self->{config}->stcpass,
+    rcpt_callback => {
+      to_session => $Alias,
+      to_handler => 'stomp_receipt',
+    },
+  );
 
-    # Init STOMP Client. Adjust params in config file.
-    my $stc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp->spawn({
-        Alias         => $Alias . '_STC',
-        mq_address    => $self->{config}->mq_address,
-        mq_port       => $self->{config}->mq_port,
-        queue         => '/queue/`.lc($epname).q`',
-        direction     => 'OB',
-        user          => $self->{config}->stcuser,
-        pass          => $self->{config}->stcpass,
-        rcpt_callback => {
-            to_session => $Alias,
-            to_handler => 'RCPT_`.$epname.q`',
-        },
-    });
+  # init the SOAP client
+  my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn(
+    proxy   => $self->{config}->soap_proxy,
+    service => $self->{config}->soap_service,
+    to_session => $Alias,
+    to_handler => 'soap_response',
+    retry_reconnect => 1,
+  );
 
-    # Init SOAP Client. Adjust params in config file
-    my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn({
-        proxy   => $self->{config}->soap_proxy,
-        service => $self->{config}->soap_service,
-    });
+  # save the clients
+  $self->{STC} = $stc;
+  $self->{SOC} = $soc;
 
-    # STOMP Client
-    $self->{STC} = $stc;
-
-    # SOAP Client
-    $self->{SOC} = $soc;
-
-    # Init the popper
-    POE::Kernel->post( '`.$epname.q`', 'pop_fifo' );
-    return $self;
+  # init the fifo popper
+  POE::Kernel->post($Alias, 'pop`.$epname.q`FIFO');
+  return $self;
 
 }
 
+# run the endpoint
 sub run {
+  my $self = shift;
+  $self->SUPER::run();
+}
 
-    my $self = shift;
+# pop the fifo
+sub pop`.$epname.q`FIFO {
+  my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+  # reset popper timer
+  $kernel->delay_set('pop`.$epname.q`FIFO', $self->{config}->popper_freq);
+  # not ready to pop...
+  return unless ($self->{ikc_stat} && $self->{STC}->{stc_stat} && $self->{SOC}->{soc_stat});
+  # no new pop until we flush the current one
+  return if defined($self->{fifo_id});
 
-    $self->SUPER::run();
+  my $soc_call = 'pop`.$epname.q`FIFO';
+  $self->{soc_call} = $soc_call;
+  $self->{SOC}->$soc_call(
+    $self->{config}->socuser,
+    $self->{config}->socpass,
+  );
+}
+
+# main OB WebService
+sub get`.$epname.q` {
+  my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+  my $soc_call = 'get`.$epname.q`';
+  unless($self->{SOC}->{soc_stat}){
+    $kernel->delay_set($soc_call, $self->{config}->soc_retry);
+  }
+  $self->{soc_call} = $soc_call;
+  $self->{SOC}->$soc_call(
+    $self->{config}->socuser,
+    $self->{config}->socpass,
+    # Adjust to your needs (see soap_response and pop`.$epname.q`FIFO_response)
+    $self->{params}->{document_id},
+  );
 
 }
 
-# The FIFO popper
-sub pop_fifo {
-    my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
-
-    # Reset the popper
-    $kernel->delay_set('pop_fifo', $self->{config}->popper_freq);
-
-    # Not initialized yet
-    return unless ($self->{ikc_stat} && $self->{STC}->{stc_stat});
-
-    # No popping if current one is not cleared. This will be cleared
-    # when we get a RECEIPT from the MQ.
-    return if defined($self->{fifo_id});
-
-    my $soc = $self->{SOC};
-
-    # pop the FIFO via SOAP. Note the name of the service is just an example
-    # please adjust with your actual wsdl name for this service in config file
-    my $call = $soc->pop`.$epname.q`(
-        $self->{config}->socuser,
-        $self->{config}->socpass
-    );
-
-    unless ( $call->fault ) {
-
-        # This example uses JSON to exemplify how easy it is to
-        # retrieve the serialized data. You can, of course, use XML or
-        # another serialization technique (YAML, for example) and
-        # adapt this to your liking.
-        my $retval = from_json( $call->result );
-        if ( my $fifo_id = $retval->{fifo_id} ) {
-
-            # Save current FIFO record. This not only blocks any
-            # further popping until we have processed the current one
-            # (see above), but saving data will also give you a chance
-            # to retry send in STOMP errors, etc.
-            $self->{fifo_id} = $fifo_id;
-            $self->{params}  = from_json( $retval->{params} );
-        }
-        # No FIFO record has been popped. We assume here that your
-        # popping web service will return OK but with null in the
-        # fifo_id. Adjust this (and the if above) according to your
-        # particular web service.
-        else {
-            $self->{fifo_id} = undef;
-            $self->{params}  = undef;
-        }
-
-    }
-    else {
-        my $logmsg = "FAIL pop_fifo (".
-            $call->faultstring.")\n";
-        $kernel->yield('logit', 'alert', $logmsg);
-    }
-
-    $kernel->post( $session, '`.$epname.q`' ) if defined $self->{fifo_id};
-
+# marks fifo as popped
+sub popped`.$epname.q`FIFO {
+  my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+  my $soc_call = 'popped`.$epname.q`FIFO';
+  unless($self->{SOC}->{soc_stat}){
+    $kernel->delay_set($soc_call, $self->{config}->soc_retry);
+  }
+  $self->{soc_call} = $soc_call;
+  $self->{SOC}->$soc_call(
+    $self->{config}->socuser,
+    $self->{config}->socpass,
+    $self->{fifo_id},
+  );
 }
 
-# Main OB WebService
-sub `.$epname.q` {
+# STOMP receipt from MQ
+sub stomp_receipt {
+  my ( $self, $kernel, $session, $frame ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $receipt_id = $frame->headers->{receipt};
+  my $fifo_id    = $self->{fifo_id};
 
-    my ( $self, $kernel, $session ) = @_[ OBJECT, KERNEL, SESSION ];
+  if ($receipt_id != $fifo_id) {
+    my $logmsg = "FATAL ERROR: Receipt id does not match expected\n";
+    $kernel->yield('logit', 'emergency', $logmsg);
+    croak $logmsg;
+  }
 
-    my $soc = $self->{SOC};
-    my $stc = $self->{STC};
-
-    my $fifo_id = $self->{fifo_id};
-
-    # Get the actual data from the Main OB WebService. Note that the Service 
-    # Name and parameters are just examples. Adapt to your actual SOAP Service
-    my $call = $soc->get`.$epname.q`(
-        $self->{config}->socuser,
-        $self->{config}->socpass,
-        $self->{params}->{your_record_id}
-    );
-
-    # SOAP Call Went OK
-    unless ( $call->fault ) {
-
-        # Simple example that pushes the data received
-        my $result = $call->result;
-
-        # Send the data over STOMP and ask for RECEIPT
-        my $nframe = $stc->stomp->send({
-            destination => $stc->config('Queue'),
-            data        => $result,
-            receipt     => $fifo_id,
-        });
-
-        # Log the success
-        my $logmsg = "OK SOAP `.$epname.q` and sent to the MQ";
-        $kernel->yield('logit', 'alert', $logmsg);
-
-        $kernel->call( $stc->config('Alias'), 'send_data', $nframe );
-    }
-    # SOAP Call Failed
-    else {
-        # Log the SOAP call failure
-        my $logmsg = "FAIL `.$epname.q` for FIFO ID $fifo_id (".
-            $call->faultstring.")\n";
-        $kernel->yield('logit', 'alert', $logmsg);
-        # retry SOAP service
-        $kernel->delay_set('`.$epname.q`', $self->{config}->soc_retry);
-    }
-
+  $kernel->yield('popped`.$epname.q`FIFO');
 }
 
-# STOMP RECEIPT Handler
-sub RCPT_`.$epname.q` {
+# SOAP responses (including errors)
+sub soap_response {
+  my ( $self, $kernel, $session, $soc_ret ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $call  = undef;
+  my $data  = undef;
+  my $error = undef;
 
-    my ( $self, $kernel, $session, $frame ) =
-      @_[ OBJECT, KERNEL, SESSION, ARG0 ];
-
-    my $receipt_id = $frame->headers->{receipt};
-    my $fifo_id    = $self->{fifo_id};
-
-    my $soc = $self->{SOC};
-
-    if($receipt_id != $fifo_id){
-        my $logmsg = "ENDPOINT PANIC! THE FIFO ID DOES NOT MATCH RECEIPT. BAILING OUT!\n";
-        $kernel->yield('logit', 'emergency', $logmsg);
-        # Croak immediately
-        croak $logmsg;
+  if(ref $soc_ret eq 'ARRAY'){
+    $call = $soc_ret->[0];
+    $data = $soc_ret->[1];
+    unless($call eq $self->{soc_call}){
+      $error = 'ERROR: SOAP Response does not match current Call';
     }
-
-
-    # Mark the FIFO record as popped. This is just anothe example SOAP
-    # Call. Adjust to your needs and actual WSDL definitions
-    my $call = $soc->popped`.$epname.q`(
-        $self->{config}->socuser,
-        $self->{config}->socpass,
-        $fifo_id
-    );
-
-    my $popped_fail = 0;
-
-    unless ( $call->fault ) {
-
-        # Clear current FIFO is popped call wen OK. This will allow new
-        # popping to continue (see pop_fifo above)
-        if ( $call->result eq 'OK' ) {
-            $self->{fifo_id} = undef;
-            $self->{params}  = undef;
-        }
-        # SOAP Executed but with Errors
-        else {
-            # Log the SOAP Failure
-            my $logmsg = 
-                "FAIL The SOAP popped`.$epname.q` executed fine, ".
-                "but did NOT return OK (".$call->result.")\n";
-            $kernel->yield('logit', 'alert', $logmsg);
-            $popped_fail = 1;
-        }
-
+    if($call =~ m/^-ERROR-$/){
+      $error = $data;
+      $call = $self->{soc_call};
     }
-    # SOAP Execution FAILED
-    else {
-        # Log it
-        my $logmsg = "FAIL popped`.$epname.q` for FIFO ID $fifo_id (".
-            $call->faultstring.")\n";
-        $kernel->yield('logit', 'alert', $logmsg);
-        $popped_fail = 1;
+    $self->{soc_call} = undef;
+  }
+  else{
+    $error = 'ERROR: SOAP Response is Invalid';
+  }
 
-    }
+  unless($error){
+    $kernel->yield($call.'_response', $data);
+  }
+  else {
+    my $logmsg = "ERROR: SOAP Call: $call Failed\n";
+    $kernel->post($session, 'logit', 'alert', $logmsg);
+    $kernel->delay_set($call, $self->{config}->soc_retry);
+  }
+}
 
-    # Retry SOAP Service
-    if($popped_fail){
-        $kernel->delay_set('RCPT_`.$epname.q`', $self->{config}->soc_retry, $frame);
-    }
+sub pop`.$epname.q`FIFO_response {
+  my ( $self, $kernel, $session, $data ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $retval = from_json( $data );
+  if ( my $fifo_id = $retval->{fifo_id} ) {
+    $self->{fifo_id} = $fifo_id;
+    $self->{params}  = from_json( $retval->{params} );
+    $kernel->post( $session, 'get`.$epname.q`' ) if defined $self->{fifo_id};
+  } else {
+    $self->{fifo_id} = undef;
+    $self->{params}  = undef;
+  }
+}
 
+# main web service response
+sub get`.$epname.q`_response {
+  my ( $self, $kernel, $session, $data ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  my $stc    = $self->{STC};
+  my $fifo_id = $self->{fifo_id};
+  my $nframe = $stc->stomp->send({
+    destination => $stc->config('Queue'),
+    data        => $data,
+    receipt     => $fifo_id,
+  });
+
+  my $logmsg = "OK SOAP get`.$epname.q` and sent to the MQ";
+  $kernel->post($session, 'logit', 'alert', $logmsg);
+  $kernel->post($stc->config('Alias'), 'send_data', $nframe );
+}
+
+sub popped`.$epname.q`FIFO_response {
+  my ( $self, $kernel, $session, $data ) = @_[ OBJECT, KERNEL, SESSION, ARG0 ];
+  # Example only... adjust to your needs
+  if ( $data eq 'OK' ) {
+    $self->{fifo_id} = undef;
+    $self->{params}  = undef;
+  }
+  else {
+    my $logmsg = "SOAP Call popped`.$epname.q` executed fine, ".
+      "but did not restun OK: ($data)\n";
+    $kernel->post($session, 'logit', 'alert', $logmsg);
+    $kernel->delay_set('popped`.$epname.q`FIFO', $self->{config}->soc_retry);
+  }
 }
 
 1;
-
 
 `;
 

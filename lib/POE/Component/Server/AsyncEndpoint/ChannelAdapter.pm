@@ -7,7 +7,7 @@ our @EXPORT = ( );
 use Switch;
 use base qw(Exporter);
 use vars qw($VERSION);
-$VERSION = '0.01';
+$VERSION = '0.10';
 
 use Carp qw(croak);
 use POE;
@@ -15,115 +15,116 @@ use POE;
 use POE::Component::IKC::Client;
 use POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config;
 
-autoflush STDOUT;
+
+use constant SHUTDOWN_SIGNALS => ('TERM', 'HUP', 'INT');
+
 
 sub new{
-
-    my $class = shift;
-    my $args  = shift;
-
-    # setup arguments
-    my $alias;
-    my $ostates;
-    if ( ref($args) eq 'HASH' ){
-        $alias = $args->{Alias};
-        $ostates = $args->{OStates};
-    }
-
-    # our object
-    my $self = {
-        config => POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config->init($alias),
-    };
-    bless  $self, $class;
-
-    croak "CAERROR||Cannot init CA without a POE Session Alias!"
-        unless defined $alias;
-
-    $self->{alias} = $alias;
-    $self->{ikc_stat} = 0;
-
-    POE::Component::IKC::Client->spawn(
-        ip => $self->{config}->ikc_addr,
-        port => $self->{config}->ikc_port,
-        name => $$."_IKCC",
-        on_connect => sub {
-            POE::Kernel->post('IKC', 'publish', 'CA_SESSION', ['aesstat', 'quit']);
-            $self->{ikc_stat} = 1;
-        },
-    );
+  my $package = shift;
+  croak "$package requires an even number of parameters" if @_ & 1;
+  my %args = @_;
+  my $self = bless ({}, $package);
 
 
-    # Main AES Session
-    POE::Session->create(
-        inline_states => {
-            _start => sub {
-                my ($kernel, $heap) = @_[KERNEL, HEAP];
-                $kernel->alias_set("$alias");
-                $kernel->alias_set('CA_SESSION');
-                $heap->{self} = $self;
-                $kernel->yield('start');
-            },
-            start => \&start,
-            aesstat => \&aesstat,
-            quit => \&quit,
-            logit => \&logit,
-        },
+  croak "cannot init CA without a POE session alias" unless $args{Alias};
 
-        object_states => $ostates ? [ $self => $ostates ] : [ ],
+  $self->{CONFIG} = \%args;
+  $self->{alias} = $args{Alias};
+  $self->{config} = POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config->init($self->{alias});
+  $self->{ikc_stat} = 0;
 
-    );
+  my @ostates = @{$args{OStates}} or undef;
 
-    return $self;
+  POE::Component::IKC::Client->spawn(
+    ip => $self->{config}->ikc_addr,
+    port => $self->{config}->ikc_port,
+    name => $$."_IKCC",
+    on_connect => sub {
+      POE::Kernel->post('IKC', 'publish', 'CA_SESSION', ['aesstat', 'shutdown']);
+      $self->{ikc_stat} = 1;
+    },
+  );
 
+
+  # Main AES Session
+  @ostates = (qw( child_sig aesstat start shutdown_endpoint logit ),@ostates);
+  POE::Session->create(
+    object_states => [
+      $self => {
+        _start => '_client_start',
+        _stop => 'stop',
+        shutdown => '_shutdown',
+      },
+      $self => \@ostates,
+    ],
+    (ref $args{options} eq 'HASH' ? (options => $args{options}) : () ),
+  );
+
+  return $self;
 
 }
 
-# derived classes may implement this method
+# only for debug
+sub child_sig {
+ $_[KERNEL]->post('logit','debug',"CHLD:".$_[ARG1]."\n");
+}
+
+sub _client_start {
+  my ($kernel, $self) = @_[KERNEL, OBJECT];
+  $kernel->alias_set($self->{alias});
+  $kernel->alias_set('CA_SESSION'); # for IKC
+  $kernel->sig(CHLD => 'child_sig');
+
+  foreach my $signal ( SHUTDOWN_SIGNALS ){
+    $kernel->sig($signal => 'shutdown');
+  }
+  $kernel->yield('start');
+}
+
+
+# derived classes may override this method
 sub start {
-   my ($kernel, $session) = @_[KERNEL, SESSION];
-   # TODO: TEMPORARY HACK FOR TESTING
-   $kernel->delay_set('start', 20);
-   return;
+  my ($kernel, $session) = @_[KERNEL, SESSION];
+  return;
+}
+
+sub stop {
+  my ($kernel, $session) = @_[KERNEL, SESSION];
+  return;
 }
 
 
 # AES Status Request
 sub aesstat {
-
-    my ($kernel, $self) = @_[KERNEL, OBJECT];
-
-    return "CASTAT|$$|OK";
-
+  my ($kernel, $self) = @_[KERNEL, OBJECT];
+  return "CASTAT|$$|OK";
 }
 
-# AES Quit Request
-sub quit {
-
-    my ($kernel, $self) = @_[KERNEL, OBJECT];
-
-    #TODO: Shutdown sequence
-    return "CASTAT|$$|QUIT";
-
+# AES Shutdown Request
+sub _shutdown {
+  my ($kernel, $self) = @_[KERNEL, OBJECT];
+  $kernel->delay_set('shutdown_endpoint', 1);
 }
 
+# may be overriden but must call SUPER
+sub shutdown_endpoint {
+  my ($kernel, $self) = @_[KERNEL, OBJECT];
+  $kernel->post('IKC','shutdown');
+  $kernel->alias_remove($self->{alias});
+  $kernel->alias_remove('CA_SESSION');
+}
 
 sub run {
-
-    POE::Kernel->run();
-
+  POE::Kernel->run();
+  exit(0);
 }
 
 
-# Logger via IKC
+# logger via IKC
 sub logit {
-
-    my ($kernel, $heap, $level, $message) = @_[KERNEL, HEAP, ARG0, ARG1];
-
-    my $self = $heap->{self};
-    my $alias = $self->{alias};
-
-    $kernel->post( 'IKC', 'post', 'poe://IKCS/AES_SESSION/logit', "LOGIT|$alias|$level;;$message");
-
+  my ($kernel, $self, $level, $message) = @_[KERNEL, OBJECT, ARG0, ARG1];
+  my $alias = $self->{alias};
+  $kernel->post( 'IKC', 'post', 'poe://IKCS/AES_SESSION/ikc_event', "LOGIT|$$|$alias;;$level;;$message");
 }
 
 

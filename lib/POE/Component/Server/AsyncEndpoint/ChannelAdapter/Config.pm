@@ -5,7 +5,7 @@ use strict;
 our @EXPORT = ( );
 use base qw(Exporter);
 use vars qw($VERSION);
-$VERSION = '0.01';
+$VERSION = '0.10';
 
 use AppConfig ':argcount';
 use File::Find;
@@ -32,6 +32,7 @@ sub init {
         'ikc_port' => {DEFAULT => undef},
         'popper_freq' => {DEFAULT => 10},
         'soc_retry' => {DEFAULT => 10},
+        'start' => {DEFAULT => 0},
     );
 
     my $fn = undef;
@@ -57,8 +58,8 @@ POE::Component::Server::AsyncEndpoint::ChannelAdapter::Config
 Encapsulation of the configuration details of the Endpoint
 
 At the moment, you don't have to use this class directly because it
-is used automatically by the ChannelAdapter class. This will change in
-the next version because we want people to be able to extend the
+is used automatically by the ChannelAdapter class. This may change in
+future versions because we want people to be able to extend the
 configuration options.
 
 Inside the ChannelAdapter class there is a bit of code as such:
@@ -77,15 +78,11 @@ other implementation specific information.
 =head1 IMPORTANT NOTES
 
 The name of the sub-directory containing the Endpoint MUST MATCH the
-Alias used to initialize the configuration object. This will probably
-change in the next release as well.
+Alias used to initialize the configuration object.
 
 =head1 SEE ALSO
 
 L<AppConfig>
-
-L<POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP>
-L<POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp>
 
 L<POE::Component::Server::AsyncEndpoint>
 L<POE>

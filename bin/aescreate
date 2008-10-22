@@ -14,24 +14,18 @@ $f->make_dir('endpoints',0755);
 $f->make_dir('log',0755);
 $f->make_dir('mqdb',0755);
 
-
-
 my $aes_conf = 
 q{# Main AES Section
 [aes]
 
-# IKC with Endpoints
+# AES Network Conf
+host = localhost
+addr = 127.0.0.1
+port = 61614
+
+# IKC
 ikc_addr = 127.0.0.1
 ikc_port = 12345
-
-# AES Channel Host
-host = localhost
-
-# AES Channel IP (change this if you want to listen on a specific interface)
-addr = 127.0.0.1
-
-# AES Channel Port
-port = 61614
 
 # Path to the Logger Configuration
 log_conf = conf/aes_log.conf
@@ -45,21 +39,15 @@ wdgr = 3
 # Seconds to delay channel restart
 rstc = 5
 
-# AES Web Server Configuration
-[webserver]
-
-# The Web Server Port
-port = 32090
-
 # AES MQ Database
 [mqdb]
 
-# Path to the MQ Database (SQLite3 is the default DB)
-path = mqdb
+# The data directory
+data_dir = mqdb
 
-# AES uses complex storage see POE::Component::MessageQueue for details
-timeout = 2
-throttle_max = 2
+# Database DSN
+dsn = dbi:SQLite:dbname=mqdb/mq.db
+
 
 };
 
@@ -76,7 +64,6 @@ min_level = debug
 stderr = 1
 format = %d %m %n
 
-
 # Syslog details
 [syslog]
 class = Log::Dispatch::Syslog
@@ -86,7 +73,7 @@ min_level = warning
 [file]
 class = Log::Dispatch::File
 filename = log/mq_main_server.log
-min_level = debug
+min_level = warning
 mode = append
 };
 

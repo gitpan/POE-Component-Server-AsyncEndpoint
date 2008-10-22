@@ -2,15 +2,17 @@ package POE::Component::Server::AsyncEndpoint::Endpoints;
 
 use warnings;
 use strict;
-our @EXPORT = qw( EP_STAT_NA EP_STAT_OK EP_STAT_WA EP_STAT_FA );
+our @EXPORT = qw( EP_STAT_NA EP_STAT_OK EP_STAT_WA EP_STAT_FA EP_STOPPED );
 use base qw(Exporter);
 use vars qw($VERSION);
-$VERSION = '0.01';
+$VERSION = '0.10';
 
-use constant EP_STAT_NA => 0; # not available
-use constant EP_STAT_OK => 1; # ok
-use constant EP_STAT_WA => 2; # waiting response
-use constant EP_STAT_FA => 3; # fail
+use constant EP_STAT_NA => 0;   # not available
+use constant EP_STAT_OK => 1;   # ok
+use constant EP_STAT_WA => 2;   # waiting response
+use constant EP_STAT_FA => 3;   # fail
+use constant EP_STOPPED => 5;   # runtime stop
+
 
 use File::Find;
 use File::Util;
@@ -21,46 +23,54 @@ use Carp qw(croak);
 my @endpoints = ();
 
 sub init {
-    find(\&wanted, qw(.));
-    return @endpoints;
+  find(\&wanted, qw(.));
+  return @endpoints;
 }
 
 sub wanted {
-    my $endpoints = shift @_;
-    if(/^endpoint$/){
+  my $endpoints = shift @_;
+  if (/^endpoint$/) {
 
-        my $pname = $File::Find::name;
+    my $name = $File::Find::dir;
+    my $pname = $File::Find::name;
 
-        open(EPCONF, '<', './endpoint.conf')
-            or croak "No configuration file for Endpoint: $pname $!";
+    open(EPCONF, '<', './endpoint.conf')
+      or croak "No configuration file for Endpoint: $pname $!";
 
-        my $ikc_addr = undef;
-        my $ikc_port = undef;
-        my $name = undef;
-        while(<EPCONF>){
-            if($_ =~ /^\s*ikc_addr\s*=\s*([0-9a-zA-Z_.-]+)$/){
-                $ikc_addr = $1 if defined $1;
-            }
-            if($_ =~ /^\s*ikc_port\s*=\s*([0-9]+)$/){
-                $ikc_port = $1 if defined $1;
-            }
-        }
+    my $ikc_addr = undef;
+    my $ikc_port = undef;
+    my $start = undef;
 
-        close(EPCONF);
-
-        croak "No valid ikc_addr and/or ikc_port in conf file for Endpoint: $pname"
-            unless ( (defined $ikc_addr) && (defined $ikc_port) );
-
-        push @endpoints, {
-            pname => $pname,
-            ikc_addr => $ikc_addr,
-            ikc_port => $ikc_port,
-            stat => EP_STAT_NA,
-            retries => 0,
-            wheel => undef,
-        }
+    while (<EPCONF>) {
+      if ($_ =~ /^\s*ikc_addr\s*=\s*([0-9a-zA-Z_.-]+)$/) {
+        $ikc_addr = $1 if defined $1;
+      }
+      if ($_ =~ /^\s*ikc_port\s*=\s*([0-9]+)$/) {
+        $ikc_port = $1 if defined $1;
+      }
+      if ($_ =~ /^\s*start\s*=\s*([01])$/) {
+        $start = $1 if defined $1;
+        $start = 0 unless $start;
+      }
 
     }
+
+    close(EPCONF);
+
+    croak "No valid ikc_addr and/or ikc_port in conf file for Endpoint: $pname"
+      unless ( (defined $ikc_addr) && (defined $ikc_port) );
+
+    push @endpoints, {
+      name => $name,
+      pname => $pname,
+      ikc_addr => $ikc_addr,
+      ikc_port => $ikc_port,
+      stat => EP_STAT_NA,
+      retries => 0,
+      wheel => undef,
+      start => $start,
+    }
+  }
 
 }
 
@@ -85,6 +95,8 @@ EP_STAT_NA : Endpoint status not available
 EP_STAT_OK : Endpoint status OK
 EP_STAT_WA : Endpoint status waiting for response
 EP_STAT_FA : Endpoint status fail
+EP_STOPPED : Endpoint is stopped; do not restart
+
 
 =head1 SEE ALSO
 

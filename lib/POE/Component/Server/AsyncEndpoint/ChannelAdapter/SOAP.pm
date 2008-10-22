@@ -8,36 +8,74 @@ use Switch;
 
 use Carp qw(croak);
 use POE;
-use base qw(Exporter);
+use base qw(Exporter POE::Component::Client::SOAP);
 use vars qw($VERSION);
-$VERSION = '0.01';
+$VERSION = '0.10';
 
-use SOAP::Lite;
 
 sub spawn{
 
-    my $class = shift;
-    my $args  = shift;
+  my $package = shift;
+  croak "$package requires an even number of parameters" if @_ & 1;
+  my %args = @_;
 
-    # setup arguments
-    my $proxy = undef;
-    my $service = undef;
-    if ( ref($args) eq 'HASH' ){
-        $proxy  = $args->{proxy};
-        $service  = $args->{service};
-    }
+  my $proxy = $args{proxy};
+  my $service = $args{service};
+  my $to_session = $args{to_session};
+  my $to_handler = $args{to_handler};
+  my $debug = $args{debug};
 
-    croak "CAERROR||Cannot init SOAP Client without valid proxy and service!"
-        unless ($proxy && $service);
+  croak "Cannot init SOAP client without valid proxy and service"
+    unless ($proxy && $service);
+
+  croak "Cannot init SOAP client without session and callback"
+    unless ($to_session && $to_handler);
+
+  # init SOAP client
+  my $self = $package->SUPER::spawn(
+    proxy => $proxy,
+    service => $service,
+    retry_reconnect => 1,
+    debug => $debug,
+  );
+
+  $self->{soc_stat} = 0;
+  $self->{to_session} = $to_session;
+  $self->{to_handler} = $to_handler;
+
+  return $self;
+
+}
+
+#-----------------------------------------------------
+# overloaded methods from POE::Component::Client::SOAP
+#-----------------------------------------------------
+
+# should not be overriden
+sub handle_result {
+  my ($kernel, $self, $result) = @_[KERNEL,OBJECT,ARG0];
+  $kernel->post($self->{to_session},$self->{to_handler}, $result);
+}
+
+# usually overriden
+sub log {
+  my ($self, $kernel, $level, $message) = @_;
+  $kernel->post($self->{to_session}, 'logit', $level, $message."\n");
+}
 
 
-    my $soap = SOAP::Lite->new(
-        proxy => $proxy,
-        service => $service,
-    );
+# these may be overiden with care of the status flag
 
-    return $soap;
+sub handle_connected {
+  my ($kernel, $self) = @_[KERNEL,OBJECT];
+  $self->{soc_stat} = 1;
+}
 
+
+sub handle_error {
+  my ($kernel, $self, $result) = @_[KERNEL,OBJECT,ARG0];
+  $self->{soc_stat} = 0;
+  $kernel->post($self->{to_session},$self->{to_handler}, $result);
 }
 
 
@@ -48,15 +86,18 @@ __END__
 
 =head1 NAME
 
-package POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP;
+POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP
 
 =head1 SYNOPSIS
 
 When you init your Endpoint:
 
         my $soc = POE::Component::Server::AsyncEndpoint::ChannelAdapter::SOAP->spawn({
-            proxy   => $self->{config}->soap_proxy,
-            service => $self->{config}->soap_service,
+          proxy   => $self->{config}->soap_proxy,
+          service => $self->{config}->soap_service,
+          to_session => $Alias,
+          to_handler => 'soap_return',
+          retry_reconnect => 1,
         });
 
         # $self->{config}->soap_proxy is defined in your config file
@@ -69,20 +110,15 @@ Later in your Endpoint:
 
         # make a SOAP call as if it were local
         my $call = $soc->yourSOAPCall(
-            $self->{config}->socuser,
-            $self->{config}->socpass
+          $self->{config}->socuser,
+          $self->{config}->socpass,
+          @params,
         );
-
-        unless ( $call->fault ) {
-
-        ...
 
 
 =head1 DESCRIPTION
 
-At the moment, this class is basically a wrapper around SOAP::Lite
-and should eventually simplify you interaction with SOAP in future
-versions.
+Non-blocking SOAP Client for PoCo::Server::AsyncEndpoint
 
 =head2 Methods
 
@@ -91,12 +127,16 @@ versions.
 
 =item spawn
 
-This sole method requires two parameters: B<proxy>, which should contain
-a valid URL to your SOAP server, and B<service>, which should point to a
-URL where the WSDL file can be fetched.
+This sole method requires four parameters: 
+   B<proxy> a valid URL to your SOAP server
+   B<service> URL where the WSDL file can be fetched
+   B<to_session> What session to post SOAP result
+   B<to_handler> What event to post to in this session
+
 
 =head1 SEE ALSO
 
+L<POE::Component::Client::SOAP>
 L<SOAP::Lite>
 
 L<POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp>

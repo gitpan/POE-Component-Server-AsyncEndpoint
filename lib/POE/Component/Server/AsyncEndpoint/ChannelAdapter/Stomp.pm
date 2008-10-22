@@ -9,161 +9,155 @@ use Carp qw(croak);
 use POE;
 use base qw(Exporter POE::Component::Client::Stomp);
 use vars qw($VERSION);
-$VERSION = '0.01';
-use Data::Dumper;
+$VERSION = '0.10';
 
 
 sub spawn{
 
-    my $class = shift;
-    my $args  = shift;
+  my $package = shift;
+  croak "$package requires an even number of parameters" if @_ & 1;
+  my %args = @_;
 
-    # setup arguments
-    my $alias = undef;
-    my $mq_address = undef;
-    my $mq_port = undef;
-    my $queue = undef;
-    my $direction = undef;
-    my $user = undef;
-    my $pass = undef;
-    my $rx_callback = undef;
-    my $rcpt_callback = undef;
-    my $err_callback = undef;
-
-    if ( ref($args) eq 'HASH' ){
-        $alias  = $args->{Alias};
-        $mq_address  = $args->{mq_address};
-        $mq_port  = $args->{mq_port};
-        $queue  = $args->{queue};
-        $direction  = $args->{direction};
-        $user  = $args->{user};
-        $pass  = $args->{pass};
-        $rx_callback  = $args->{rx_callback};
-        $rcpt_callback = $args->{rcpt_callback};
-        $err_callback  = $args->{err_callback};
-    }
-
-    croak "CAERROR||Cannot init Stomp Client without valid Alias for POE Session!"
-        unless $alias;
-
-    croak "CAERROR||Cannot init Stomp Client without valid IP and Port!"
-        unless ($mq_address && $mq_port);
-
-    croak "CAERROR||Direction must be OB or IB!"
-        unless ($direction =~ /^OB|IB$/);
-
-    croak "CAERROR||Cannot init IB/OB Stomp Client without a Queue!"
-        unless ($queue);
-
-    if($direction eq 'IB'){
-
-        croak "CAERROR||If Stomp Client is IB you must define Message Handler Callback!"
-            unless ($rx_callback->{to_session} && $rx_callback->{to_handler});
-
-    }
+  my $alias  = $args{Alias};
+  my $mq_address  = $args{mq_address};
+  my $mq_port  = $args{mq_port};
+  my $queue  = $args{queue};
+  my $direction  = $args{direction};
+  my $user  = $args{user};
+  my $pass  = $args{pass};
+  my $rx_callback  = $args{rx_callback};
+  my $rcpt_callback = $args{rcpt_callback};
+  my $err_callback  = $args{err_callback};
 
 
-    if($direction eq 'OB'){
-        croak "CAERROR||If Stomp Client is OB you must define Receipt Handler Callback!"
-            unless ($rcpt_callback->{to_session} && $rcpt_callback->{to_handler});
-    }
+  croak "Cannot init Stomp Client without valid Alias!"
+    unless $alias;
 
-    my $self = $class->SUPER::spawn(
-        Alias => $alias,
-        RemoteAddress => $mq_address,
-        RemotePort => $mq_port,
-        Queue => $queue,
-        User => $user,
-        Pass => $pass,
-        Direction => $direction,
-        RxCallback => $rx_callback,
-        RcptCallback => $rcpt_callback,
-        ErrCallback => $err_callback,
-    );
+  croak "Cannot init Stomp Client without valid IP and Port!"
+    unless ($mq_address && $mq_port);
 
-    # initialized flag (will be set to 1 uppon connected
-    $self->{stc_stat} = 0;
+  croak "Direction must be OB or IB!"
+    unless ($direction =~ /^OB|IB$/);
 
-    return $self;
+  croak "Cannot init IB/OB Stomp Client without a Queue!"
+    unless ($queue);
+
+  if ($direction eq 'IB') {
+
+    croak "If Stomp Client is IB you must define Message Handler Callback!"
+      unless ($rx_callback->{to_session} && $rx_callback->{to_handler});
+
+  }
+
+
+  if ($direction eq 'OB') {
+    croak "If Stomp Client is OB you must define Receipt Handler Callback!"
+      unless ($rcpt_callback->{to_session} && $rcpt_callback->{to_handler});
+  }
+
+  my $self = $package->SUPER::spawn(
+    Alias => $alias,
+    RemoteAddress => $mq_address,
+    RemotePort => $mq_port,
+    Queue => $queue,
+    User => $user,
+    Pass => $pass,
+    Direction => $direction,
+    RxCallback => $rx_callback,
+    RcptCallback => $rcpt_callback,
+    ErrCallback => $err_callback,
+  );
+
+  # initialized flag (will be set to 1 uppon connected
+  $self->{stc_stat} = 0;
+
+  return $self;
 
 }
 
 # called when connected to the port
 sub handle_connection {
-    my ($kernel, $self) = @_[KERNEL, OBJECT];
+  my ($kernel, $self) = @_[KERNEL, OBJECT];
 
-    my $nframe = $self->stomp->connect({
-        login => $self->config('User'),
-        passcode => $self->config('Pass'),
-    });
+  my $nframe = $self->stomp->connect({
+    login => $self->config('User'),
+    passcode => $self->config('Pass'),
+  });
 
-    $kernel->post($self->config('Alias'), 'send_data', $nframe);
+  $kernel->post($self->config('Alias'), 'send_data', $nframe);
 
 }
 
 # called when CONNECT frame is recieved from stomp server
 sub handle_connected {
-    my ($kernel, $self, $frame) = @_[KERNEL,OBJECT,ARG0];
+  my ($kernel, $self, $frame) = @_[KERNEL,OBJECT,ARG0];
 
-    # marks stomp client as initialized
-    $self->{stc_stat} = 1;
+  # marks stomp client as initialized
+  $self->{stc_stat} = 1;
 
-    # add the ACK_message object state
-    $kernel->state('ACK_message', $self);
+  # add the ACK_message object state
+  $kernel->state('ACK_message', $self);
 
-    # only IB stomp clients need to subscribe
-    if($self->config('Direction') eq 'IB'){
+  # only IB stomp clients need to subscribe
+  if ($self->config('Direction') eq 'IB') {
 
-        my $nframe = $self->stomp->subscribe({
-            destination => $self->config('Queue'),
-            ack => 'client'
-        });
-        $kernel->post($self->config('Alias'), 'send_data', $nframe);
-    }
+    my $nframe = $self->stomp->subscribe({
+      destination => $self->config('Queue'),
+      ack => 'client'
+    });
+    $kernel->post($self->config('Alias'), 'send_data', $nframe);
+  }
 
 }
 
 # Main Message Handler
 sub handle_message {
-    my ($kernel, $self, $frame) = @_[KERNEL, OBJECT, ARG0];
+  my ($kernel, $self, $frame) = @_[KERNEL, OBJECT, ARG0];
 
-    if($self->config('Direction') eq 'IB'){
-        my $to_session = $self->config('RxCallback')->{to_session};
-        my $to_handler = $self->config('RxCallback')->{to_handler};
-        $kernel->post($to_session, $to_handler, $frame);
-    }
+  if ($self->config('Direction') eq 'IB') {
+    my $to_session = $self->config('RxCallback')->{to_session};
+    my $to_handler = $self->config('RxCallback')->{to_handler};
+    $kernel->post($to_session, $to_handler, $frame);
+  }
 
 }
 
 sub handle_error {
-     my ($kernel, $self, $frame) = @_[KERNEL,OBJECT,ARG0];
+  my ($kernel, $self, $frame) = @_[KERNEL,OBJECT,ARG0];
 
-     #TODO: Error Handling
+  #TODO: Error Handling
 
-    print STDERR "TODO: HANDLE ERROR";
+  print STDERR "TODO: HANDLE ERROR";
 
 }
 
 
 sub handle_receipt {
-    my ($kernel, $self, $frame) = @_[KERNEL,OBJECT,ARG0];
-    my $receipt = $frame->headers->{receipt};
+  my ($kernel, $self, $frame) = @_[KERNEL,OBJECT,ARG0];
+  my $receipt = $frame->headers->{receipt};
 
-    if($self->config('Direction') eq 'OB'){
-        my $to_session = $self->config('RcptCallback')->{to_session};
-        my $to_handler = $self->config('RcptCallback')->{to_handler};
-        $kernel->post($to_session, $to_handler, $frame);
-    }
+  if ($self->config('Direction') eq 'OB') {
+    my $to_session = $self->config('RcptCallback')->{to_session};
+    my $to_handler = $self->config('RcptCallback')->{to_handler};
+    $kernel->post($to_session, $to_handler, $frame);
+  }
 
 
 }
 
 sub ACK_message {
 
-    my ($kernel, $self, $message_id) = @_[KERNEL,OBJECT,ARG0];
+  my ($kernel, $self, $message_id) = @_[KERNEL,OBJECT,ARG0];
 
-    my $nframe = $self->stomp->ack({'message-id' => $message_id});
-    $kernel->call($self->config('Alias'), 'send_data', $nframe);
+  my $nframe = $self->stomp->ack({'message-id' => $message_id});
+  $kernel->call($self->config('Alias'), 'send_data', $nframe);
+
+}
+
+
+sub log {
+
+  # Left to be overriden by implementation
 
 }
 
@@ -173,8 +167,11 @@ sub ACK_message {
 #that is done is up to your program. But usually a "send_data" event
 #is generated.
 sub gather_data {
-    print STDERR "OOPS: IN GATHER DATA. No biggie, just report to module maintainer PLEASE\n";
+  warn "gather_data() - please report if you see this message";
 }
+
+
+
 
 1;
 
@@ -182,7 +179,8 @@ __END__
 
 =head1 NAME
 
-package POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp;
+POE::Component::Server::AsyncEndpoint::ChannelAdapter::Stomp
+
 
 =head1 SYNOPSIS
 
@@ -220,9 +218,9 @@ Later in your Endpoint:
 This class is mainly a wrapper around POE::Component::Client::Stomp
 that not only simplifies it's use in your Endpoint, but also enforces
 certain rules so the implementation complies with the Channel Adapter
-patterns we have designed. For example if you initialize an Outbound
-STOMP client it will refuse to initialize until you have defined a
-callback for the STOMP/RECEIPT, if it's an IB client it will refuse to
+design pattern. For example if you initialize an Outbound STOMP
+client it will refuse to initialize until you have defined a callback
+for the STOMP/RECEIPT, if it's an IB client it will refuse to
 initialize if you don't define a callback to handle received data from
 the queue.
 

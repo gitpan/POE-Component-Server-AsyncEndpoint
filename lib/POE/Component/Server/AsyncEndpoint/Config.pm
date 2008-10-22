@@ -5,7 +5,7 @@ use strict;
 our @EXPORT = ( );
 use base qw(Exporter);
 use vars qw($VERSION);
-$VERSION = '0.01';
+$VERSION = '0.10';
 
 use AppConfig ':argcount';
 use File::Find;
@@ -25,9 +25,11 @@ sub init {
         'aes_ikc_addr' => {DEFAULT => undef},
         'aes_ikc_port' => {DEFAULT => undef},
         'webserver_port' => {DEFAULT => 32090},
-        'mqdb_path' => {DEFAULT => './mqdb'},
-        'mqdb_timeout' => {DEFAULT => 2},
-        'mqdb_throttle_max' => {DEFAULT => 2},
+        'mqdb_data_dir' => {DEFAULT => 'mqdb'},
+        'mqdb_dsn' => {DEFAULT => 'dbi:SQLite:dbname=mqdb/mq.db'},
+        'mqdb_username' => {DEFAULT => ''},
+        'mqdb_password' => {DEFAULT => ''},
+
     );
 
     my $fn = undef;

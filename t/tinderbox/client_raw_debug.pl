@@ -6,7 +6,7 @@ use strict;
 use IO::Socket;
 
 my $remote = '127.0.0.1';
-my $port = 61613;
+my $port = 61614;
 
 my $server = IO::Socket::INET->new(PeerAddr => $remote,
 				   PeerPort => $port,

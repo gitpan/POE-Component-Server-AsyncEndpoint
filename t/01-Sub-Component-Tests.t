@@ -5,7 +5,7 @@ use Test::More tests => 1;
 #use Test::More "no_plan";
 use Test::Output;
 
-ok(1==1, 'Tests will be developed in later versions!');
+ok(1==1, 'Initial tests planned for 0.5x...');
 
 # Debugging only
 #sub POE::Kernel::TRACE_SESSIONS { 1 }

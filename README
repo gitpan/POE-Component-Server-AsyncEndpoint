@@ -1,9 +1,12 @@
-POE::Component::Server::AsyncEndpoint version 0.02
+POE::Component::Server::AsyncEndpoint version 0.10
 ==================================================
 
 DESCRIPTION
 
-This module implements an asynchronous endpoint server to help deploy
+This module allows you to create Asynchronous Outbound WebServices
+pushing the info to an MQ.
+
+It implements an asynchronous endpoint server to help deploy
 asynchronous web services in SOA architectures. Even though it may
 resemble many features of the so-called Enterprise Service Bus, it is
 actually the opposite of an ESB in the sense it does not try to
@@ -33,8 +36,6 @@ This module requires these other modules and libraries:
 	SOAP::Lite >= any recent version
         SOAP::Transport::HTTP >= any recent version
         AppConfig >= any recent version
-        CGI >= any recent version
-	MIME::Entity >= any recent version
         File::Find >= any recent version
         File::Util >= any recent version
         File::Spec >= any recent version
@@ -45,7 +46,6 @@ This module requires these other modules and libraries:
         Test::More >= any recent version
         Data::Dumper >= any recent version
         Net::Stomp >= any recent version
-        Switch >= any recent version
         Event::Notify >= any recent version
 
 

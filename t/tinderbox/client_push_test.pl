@@ -2,7 +2,7 @@
 # send a message to the queue 'foo'
 use Net::Stomp;
 
-my $stomp = Net::Stomp->new( { hostname => 'localhost', port => '61613' } );
+my $stomp = Net::Stomp->new( { hostname => 'localhost', port => '61614' } );
 
 $stomp->connect( { login => 'hello', passcode => 'there' } );
 $stomp->send(
